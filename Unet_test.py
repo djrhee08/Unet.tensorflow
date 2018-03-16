@@ -4,10 +4,10 @@ import tensorlayer as tl
 import numpy as np
 import matplotlib.pyplot as plt
 
+from ImageGenerator import ImageDataGenerator
+from tensorflow.contrib.data import Iterator
+
 import TensorflowUtils as utils
-import read_DICOMbatch as dicom_batch
-import read_DICOMbatchImageOnly as dicom_batchImage
-import dicom_utils.dicomPreprocess as dpp
 import datetime
 from six.moves import xrange
 import time
@@ -26,6 +26,8 @@ tf.flags.DEFINE_string('optimization', "dice", "optimization mode: cross_entropy
 tf.flags.DEFINE_string('data_option', "normal", "data mode: normal/ fast")
 
 MAX_ITERATION = int(9000)
+
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 if FLAGS.data_option == "fast":
     dir_image = 'image_fast'
@@ -176,53 +178,6 @@ def u_net(x, keep_prob, channels, n_class, layers=3, features_root=16, filter_si
     return output_map
 
 
-"""
-def _get_cost(self, logits, label, cost_name, cost_kwargs):
-    
-    #Constructs the cost function, either cross_entropy, weighted cross_entropy or dice_coefficient.
-    #Optional arguments are:
-    #class_weights: weights for the different classes in case of multi-class imbalance
-    #regularizer: power of the L2 regularizers added to the loss function
-    
-
-    flat_logits = tf.reshape(logits, [-1, self.n_class])
-    flat_labels = tf.reshape(label, [-1, self.n_class])
-    if cost_name == "cross_entropy":
-        class_weights = cost_kwargs.pop("class_weights", None)
-
-        if class_weights is not None:
-            class_weights = tf.constant(np.array(class_weights, dtype=np.float32))
-
-            weight_map = tf.multiply(flat_labels, class_weights)
-            weight_map = tf.reduce_sum(weight_map, axis=1)
-
-            loss_map = tf.nn.softmax_cross_entropy_with_logits(logits=flat_logits,
-                                                               labels=flat_labels)
-            weighted_loss = tf.multiply(loss_map, weight_map)
-
-            loss = tf.reduce_mean(weighted_loss)
-
-        else:
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=flat_logits,
-                                                                          labels=flat_labels))
-    elif cost_name == "dice_coefficient":
-        eps = 1e-5
-        prediction = pixel_wise_softmax_2(logits)
-        intersection = tf.reduce_sum(prediction * label)
-        union = eps + tf.reduce_sum(prediction) + tf.reduce_sum(label)
-        loss = -(2 * intersection / (union))
-
-    else:
-        raise ValueError("Unknown cost function: " % cost_name)
-
-    regularizer = cost_kwargs.pop("regularizer", None)
-    if regularizer is not None:
-        regularizers = sum([tf.nn.l2_loss(variable) for variable in self.variables])
-        loss += (regularizer * regularizers)
-
-    return loss
-"""
-
 
 def train(loss_val, var_list):
     optimizer = tf.train.AdamOptimizer(FLAGS.learning_rate)
@@ -268,36 +223,8 @@ def main(argv=None):
     train_op = train(loss, trainable_var)
 
 
-    #print("Setting up summary op...")
-    #summary_op = tf.summary.merge_all()
-
-#    for variable in trainable_var:
-#        print(variable)
-
-
-    #Way to count the number of variables + print variable names
-    """
-    total_parameters = 0
-    for variable in trainable_var:
-        # shape is an array of tf.Dimension
-        print(variable)
-        shape = variable.get_shape()
-        print(shape)
-        print(len(shape))
-        variable_parameters = 1
-        for dim in shape:
-            print(dim)
-            variable_parameters *= dim.value
-        print(variable_parameters)
-        total_parameters += variable_parameters
-    print("Total # of parameters : ", total_parameters)
-    """
     # All the variables defined HERE -------------------------------
-    #dir_name = 'DICOM_data/mandible/'
-    #contour_name = 'brainstem'
-
-    dir_name = 'AQA/'
-    contour_name = 'external'
+    dir_path = 'AP/Train'
 
     batch_size = 3
 
@@ -307,9 +234,15 @@ def main(argv=None):
     resize_shape = (224, 224)
     rotation = True
     rotation_angle = [-5, 5]
-    bitsampling = False
-    bitsampling_bit = [4, 8]
     # --------------------------------------------------------------
+
+    with tf.device('/cpu:0'):
+        tr_data = ImageDataGenerator(dir_path=dir_path,mode='training',batch_size=2)
+
+        iterator = Iterator.from_structure(tr_data.data.output_types, tr_data.data.output_shapes)
+        next_batch = iterator.get_next()
+
+    training_init_op = iterator.make_initializer(tr_data.data)
 
 
     #sess = tf.Session()
@@ -326,36 +259,22 @@ def main(argv=None):
         print("Model restored...")
 
     if FLAGS.mode == "train":
-        print("Setting up training data...")
-        dicom_records = dicom_batch.read_DICOM(dir_name=dir_name + 'training_set', dir_image=dir_image, dir_mask=dir_mask,
-                                               contour_name=contour_name, opt_resize=opt_resize, resize_shape=resize_shape,
-                                               opt_crop=opt_crop, crop_shape=crop_shape, rotation=rotation,
-                                               rotation_angle=rotation_angle, bitsampling=bitsampling,
-                                               bitsampling_bit=bitsampling_bit)
-
-        print("Setting up validation data...")
-        validation_records = dicom_batch.read_DICOM(dir_name=dir_name + 'validation_set', dir_image=dir_image, dir_mask=dir_mask,
-                                                    contour_name=contour_name, opt_resize=opt_resize, resize_shape=resize_shape,
-                                                    opt_crop=opt_crop, crop_shape=crop_shape, rotation=False,
-                                                    rotation_angle=rotation_angle, bitsampling=False,
-                                                    bitsampling_bit=bitsampling_bit)
-
         print("Start training")
         start = time.time()
         train_loss_list = []
         x_train = []
         validation_loss_list = []
         x_validation = []
+
+        sess.run(training_init_op)
+
         # for itr in xrange(MAX_ITERATION):
         for itr in xrange(MAX_ITERATION): # about 12 hours of work / 2000
-            train_images, train_annotations = dicom_records.next_batch(batch_size=batch_size)
+            print("Before getting data")
+            train_images, train_annotations = sess.run(next_batch)
+            print("After getting data")
 
             # Reshape the annotation as the output (mask) has different dimension with the input
-            print(type(train_annotations), train_annotations.shape)
-            train_annotations = dpp.resize_3d(np.squeeze(train_annotations, axis=3),resize_shape=(LOGITS_SIZE,LOGITS_SIZE))
-            train_annotations = train_annotations[:, :, :, np.newaxis]
-            print(type(train_annotations),train_annotations.shape)
-
             feed_dict = {image: train_images, annotation: train_annotations, keep_probability: 0.75}
             sess.run(train_op, feed_dict=feed_dict)
 
@@ -367,19 +286,6 @@ def main(argv=None):
                 x_train.append(itr+1)
                 #summary_writer.add_summary(summary_str, itr)
 
-            if (itr+1) % 50 == 0:
-                valid_images, valid_annotations = validation_records.next_batch(batch_size=batch_size)
-                valid_annotations = dpp.resize_3d(np.squeeze(valid_annotations, axis=3), resize_shape=(LOGITS_SIZE, LOGITS_SIZE))
-                valid_annotations = valid_annotations[:, :, :, np.newaxis]
-
-                valid_loss = sess.run(loss, feed_dict={image: valid_images, annotation: valid_annotations,
-                                                       keep_probability: 1.0})
-                print("%s ---> Validation_loss: %g" % (datetime.datetime.now(), valid_loss))
-                validation_loss_list.append(valid_loss)
-                x_validation.append(itr+1)
-
-            if (itr+1) % 2000 == 0:
-                saver.save(sess, FLAGS.logs_dir + "model.ckpt", itr+1)
 
             end = time.time()
             print("Iteration #", itr+1, ",", np.int32(end - start), "s")
@@ -388,7 +294,6 @@ def main(argv=None):
 
         # Draw loss functions
         plt.plot(x_train,train_loss_list,label='train')
-        plt.plot(x_validation,validation_loss_list,label='validation')
         plt.title("loss functions")
         plt.xlabel("epoch")
         plt.ylabel("loss")

@@ -18,7 +18,7 @@ class ImageDataGenerator(object):
     Requires Tensorflow >= version 1.12rc0
     """
 
-    def __init__(self, dir_path, mode, batch_size, num_classes, shuffle=True, buffer_size=1000):
+    def __init__(self, dir_path, mode, batch_size, shuffle=True, buffer_size=10):
         """Create a new ImageDataGenerator.
         Recieves a path string to a text file, which consists of many lines,
         where each line has first a path string to an image and seperated by
@@ -38,14 +38,12 @@ class ImageDataGenerator(object):
         Raises:
             ValueError: If an invalid mode is passed.
         """
-        self.num_classes = num_classes
-
         self.img_path = dir_path + '/image'
         self.mask_path = dir_path + '/mask'
 
         # TODO: img_path and mask_path should be matched and reorganized here!!!
-
-
+        print(self.img_path)
+        print(self.mask_path)
 
         # number of samples in the dataset
         self.data_size = len(self.mask_path)
@@ -92,38 +90,43 @@ class ImageDataGenerator(object):
         self.img_path = []
         self.mask_path = []
         for i in permutation:
-            self.img_paths.append(img_path[i])
+            self.img_path.append(img_path[i])
             self.mask_path.append(mask_path[i])
 
     def _parse_function_train(self, img_fname, mask_fname):
         """Input parser for samples of the training set."""
         # load and preprocess the image
+
+        # Either find a way to use tensor string (img_fname) to use np.load
+        # Or find a way to convert img_string to img_tensor in an appropriate form
+        # Or find a way to read file in npy format
         img_string = tf.read_file(img_fname)
-        img_decoded = tf.image.decode_png(img_string, channels=3)
-        img_resized = tf.image.resize_images(img_decoded, [224, 224])
+        img_tensor = tf(img_string)
+#        img_string = tf.read_file(img_fname)
+#        img_decoded = tf.image.decode_png(img_string, channels=1)
         """
         Data augmentation + 3 channel addition comes here.
+        
         """
 
         # load and preprocess the image
-        mask_string = tf.read_file(mask_fname)
+        mask = np.load(mask_fname)
+        mask_tensor = tf.convert_to_tensor(mask, np.int32)
         # TODO: Change this part!! not decode_png... (maybe just omit it?)
-        mask_decoded = tf.image.decode_png(mask_string, channels=1)
-        mask_resized = tf.image.resize_images(mask_decoded, [224, 224])
+        #mask_decoded = tf.image.decode_(mask_string, channels=1)
 
-        return img_resized, mask_resized
+        return img_tensor, mask_tensor
 
     def _parse_function_inference(self, img_fname, mask_fname):
         """Input parser for samples of the validation/test set."""
         # load and preprocess the image
         img_string = tf.read_file(img_fname)
-        img_decoded = tf.image.decode_png(img_string, channels=3)
+        img_decoded = tf.image.decode_png(img_string, channels=1)
         img_resized = tf.image.resize_images(img_decoded, [224, 224])
 
         # load and preprocess the mask
         mask_string = tf.read_file(mask_fname)
         # TODO: Change this part!! not decode_png... (maybe just omit it?)
         mask_decoded = tf.image.decode_png(mask_string, channels=1)
-        mask_resized = tf.image.resize_images(mask_decoded, [224, 224])
 
         return img_resized, mask_resized
