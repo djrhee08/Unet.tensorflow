@@ -232,21 +232,20 @@ def main(argv=None):
     crop_shape = (224, 224)
     opt_resize = False
     resize_shape = (224, 224)
-    rotation = True
+    rotation_status = True
     rotation_angle = [-5, 5]
     # --------------------------------------------------------------
 
     with tf.device('/cpu:0'):
-        tr_data = ImageDataGenerator(dir_path=dir_path,mode='training',batch_size=2)
-
+        tr_data = ImageDataGenerator(dir_path=dir_path, mode='training', rotation_status=rotation_status,
+                                     rotation_angle=rotation_angle, batch_size=batch_size)
         iterator = Iterator.from_structure(tr_data.data.output_types, tr_data.data.output_shapes)
         next_batch = iterator.get_next()
 
     training_init_op = iterator.make_initializer(tr_data.data)
 
-
-    #sess = tf.Session()
-    sess = tf.Session(config=tf.ConfigProto(device_count={'GPU': 0})) # CPU ONLY
+    sess = tf.Session()
+    #sess = tf.Session(config=tf.ConfigProto(device_count={'GPU': 0})) # CPU ONLY
 
     print("Setting up Saver...")
     saver = tf.train.Saver()
@@ -270,9 +269,7 @@ def main(argv=None):
 
         # for itr in xrange(MAX_ITERATION):
         for itr in xrange(MAX_ITERATION): # about 12 hours of work / 2000
-            print("Before getting data")
             train_images, train_annotations = sess.run(next_batch)
-            print("After getting data")
 
             # Reshape the annotation as the output (mask) has different dimension with the input
             feed_dict = {image: train_images, annotation: train_annotations, keep_probability: 0.75}

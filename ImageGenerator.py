@@ -6,11 +6,9 @@
 
 import tensorflow as tf
 import numpy as np
-
-# TODO: Change this to tf.data.Dataset
-from tensorflow.contrib.data import Dataset
-from tensorflow.python.framework import dtypes
-from tensorflow.python.framework.ops import convert_to_tensor
+import glob
+import dicom_utils.dicomPreprocess as dpp
+import skimage.transform as sktf
 
 
 class ImageDataGenerator(object):
@@ -18,7 +16,7 @@ class ImageDataGenerator(object):
     Requires Tensorflow >= version 1.12rc0
     """
 
-    def __init__(self, dir_path, mode, batch_size, shuffle=True, buffer_size=10):
+    def __init__(self, dir_path, mode, rotation_status, rotation_angle, batch_size, shuffle=True, buffer_size=1):
         """Create a new ImageDataGenerator.
         Recieves a path string to a text file, which consists of many lines,
         where each line has first a path string to an image and seperated by
@@ -30,7 +28,6 @@ class ImageDataGenerator(object):
             mode: Either 'training' or 'validation'. Depending on this value,
                 different parsing functions will be used.
             batch_size: Number of images per batch.
-            num_classes: Number of classes in the dataset.
             shuffle: Whether or not to shuffle the data in the dataset and the
                 initial file list.
             buffer_size: Number of images used as buffer for TensorFlows
@@ -40,93 +37,119 @@ class ImageDataGenerator(object):
         """
         self.img_path = dir_path + '/image'
         self.mask_path = dir_path + '/mask'
+        self.mask_list = []
+        self.img_list = []
+        self.rotation_status = rotation_status
+        self.rotation_angle = rotation_angle
 
-        # TODO: img_path and mask_path should be matched and reorganized here!!!
-        print(self.img_path)
-        print(self.mask_path)
+        # TODO 1: img_path and mask_path should be matched and reorganized here!!!
+        # TODO 2: Check what buffer size is.
+        for file in glob.glob(self.mask_path + "/*.npy"):
+            self.mask_list.append(file)
+
+        for file in glob.glob(self.img_path + "/*.npy"):
+            self.img_list.append(file)
 
         # number of samples in the dataset
-        self.data_size = len(self.mask_path)
+        self.data_size = len(self.mask_list)
 
         # initial shuffling of the image and mask lists (together!)
         if shuffle:
             self._shuffle_lists()
 
         # convert lists to TF tensor
-        self.img_path = convert_to_tensor(self.img_path, dtype=dtypes.string)
-        self.mask_path = convert_to_tensor(self.mask_path, dtype=dtypes.string)
+        self.image_list = tf.constant(self.img_list)
+        self.mask_list = tf.constant(self.mask_list)
 
         # create dataset
-        data = Dataset.from_tensor_slices((self.img_path, self.mask_path))
+        data = tf.data.Dataset.from_tensor_slices((self.img_list, self.mask_list))
 
-        # distinguish between train/infer. when calling the parsing functions
+        data = data.map(lambda img_fname, mask_fname : tuple(tf.py_func(self._read_py_function, [img_fname, mask_fname],
+                                                                        [tf.double, tf.float64])), num_parallel_calls=4)
+
+
+        # Set image/mask types to be uint16, bool respectively. Then, convert them into
+        # float32/float32 (? think about it) for feeding
+
+        data = data.repeat()
+        data = data.batch(batch_size)
+
         if mode == 'training':
-            data = data.map(self._parse_function_train, num_threads=8, output_buffer_size=100*batch_size)
-
+            data = data.map(self.train_function, num_parallel_calls=4)
+            #  Currently have some problem + not compatible with what I try to do..
+            #data = data.apply(tf.contrib.data.map_and_batch(map_func=self._parse_function_train, batch_size=batch_size))
         elif mode == 'validation':
-            data = data.map(self._parse_function_inference, num_threads=8, output_buffer_size=100*batch_size)
-
+            data = data.map(self.validation_function, num_parallel_calls=4)
         else:
             raise ValueError("Invalid mode '%s'." % (mode))
 
-        # shuffle the first `buffer_size` elements of the dataset
-        if shuffle:
-            data = data.shuffle(buffer_size=buffer_size)
-
-        # create a new dataset with batches of images
-        data = data.batch(batch_size)
-
-        # NEWLY ADDED! 'prefetch'
         data = data.prefetch(buffer_size=buffer_size)
 
         self.data = data
 
+        """
+        # shuffle the first `buffer_size` elements of the dataset
+        if shuffle:
+            data = data.shuffle(buffer_size=buffer_size)
+        """
+
+    def _read_py_function(self, img_fname, mask_fname):
+        #print(img_fname.decode('utf-8'))
+        img_fname = img_fname.decode('utf-8')
+        mask_fname = mask_fname.decode('utf-8')
+        #print(img_fname, mask_fname)
+
+        image = np.load(img_fname)
+        mask = np.load(mask_fname)
+        mask = dpp.resize_2d(mask, (472,472))
+
+        if self.rotation_status == True:
+            aug_img = image[np.newaxis, :, :]
+            aug_mask = mask[np.newaxis, :, :]
+            for i in range(len(self.rotation_angle)):
+                rotate_img = dpp.rotate(image, self.rotation_angle[i])
+                aug_img = np.append(aug_img, rotate_img[np.newaxis, :, :], axis=0)
+                aug_mask = np.append(aug_mask, mask[np.newaxis, :, :], axis=0)
+        else:
+            aug_img = image
+            aug_mask = mask
+
+        return aug_img, aug_mask
+
 
     def _shuffle_lists(self):
         """Conjoined shuffling of the list of paths."""
-        img_path = self.img_path
-        mask_path = self.mask_path
+        img_path = self.img_list
+        mask_path = self.mask_list
         permutation = np.random.permutation(self.data_size)
-        self.img_path = []
-        self.mask_path = []
+        self.img_list = []
+        self.mask_list = []
         for i in permutation:
-            self.img_path.append(img_path[i])
-            self.mask_path.append(mask_path[i])
+            self.img_list.append(img_path[i])
+            self.mask_list.append(mask_path[i])
 
-    def _parse_function_train(self, img_fname, mask_fname):
-        """Input parser for samples of the training set."""
-        # load and preprocess the image
 
-        # Either find a way to use tensor string (img_fname) to use np.load
-        # Or find a way to convert img_string to img_tensor in an appropriate form
-        # Or find a way to read file in npy format
-        img_string = tf.read_file(img_fname)
-        img_tensor = tf(img_string)
-#        img_string = tf.read_file(img_fname)
-#        img_decoded = tf.image.decode_png(img_string, channels=1)
+    def train_function(self, img, mask):
+
         """
-        Data augmentation + 3 channel addition comes here.
-        
+        #Data augmentation + 3 channel addition comes here.
         """
 
-        # load and preprocess the image
-        mask = np.load(mask_fname)
-        mask_tensor = tf.convert_to_tensor(mask, np.int32)
-        # TODO: Change this part!! not decode_png... (maybe just omit it?)
-        #mask_decoded = tf.image.decode_(mask_string, channels=1)
+        img = tf.reshape(img, shape=(-1, 512, 512))
+        img = tf.expand_dims(img, -1)
 
-        return img_tensor, mask_tensor
+        # TODO : Change 472 -> dynamic variable
+        #print(tf.shape(mask), tf.shape(mask)[2])
+        mask = tf.reshape(mask, shape=(-1, 472, 472))
+        #mask = tf.image.resize_images(mask, [tf.shape(mask)[0], 472, 472])
+        mask = tf.expand_dims(mask, -1)
 
-    def _parse_function_inference(self, img_fname, mask_fname):
-        """Input parser for samples of the validation/test set."""
-        # load and preprocess the image
-        img_string = tf.read_file(img_fname)
-        img_decoded = tf.image.decode_png(img_string, channels=1)
-        img_resized = tf.image.resize_images(img_decoded, [224, 224])
+        return img, mask
 
-        # load and preprocess the mask
-        mask_string = tf.read_file(mask_fname)
-        # TODO: Change this part!! not decode_png... (maybe just omit it?)
-        mask_decoded = tf.image.decode_png(mask_string, channels=1)
+    def validation_function(self, img, mask):
 
-        return img_resized, mask_resized
+        """
+        #Data augmentation + 3 channel addition comes here.
+        """
+
+        return img, mask
